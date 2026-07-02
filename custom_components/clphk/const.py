@@ -1,3 +1,5 @@
+import datetime
+
 CONF_DOMAIN = 'clphk'
 
 CONF_RETRY_DELAY = 'retry_delay'
@@ -43,6 +45,31 @@ def parse_refresh_tokens(response_json):
     if not access or not refresh:
         return None
     return access, refresh, data.get("expires_in")
+
+
+def safe_float(value):
+    """float(value), or None when value is null/empty/non-numeric.
+
+    CLP returns null for fields like a projection that does not exist yet or an
+    account with no current bill; float(None) would raise. None keeps the sensor
+    value/attribute as 'unknown' instead of crashing the whole update.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_datetime(value, fmt):
+    """strptime(value, fmt), or None when value is null/empty/unparseable."""
+    if not value:
+        return None
+    try:
+        return datetime.datetime.strptime(value, fmt)
+    except (TypeError, ValueError):
+        return None
 
 CONF_GET_ACCT = 'get_account'
 CONF_GET_BILL = 'get_bill'

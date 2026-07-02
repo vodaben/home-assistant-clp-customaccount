@@ -3,6 +3,7 @@
 Runs without Home Assistant: imports only the pure helpers from const.py.
     python tests/test_auth_classification.py
 """
+import datetime
 import os
 import sys
 
@@ -11,7 +12,13 @@ sys.path.insert(
     os.path.join(os.path.dirname(__file__), "..", "custom_components", "clphk"),
 )
 
-from const import is_auth_failure, is_transient, parse_refresh_tokens  # noqa: E402
+from const import (  # noqa: E402
+    is_auth_failure,
+    is_transient,
+    parse_datetime,
+    parse_refresh_tokens,
+    safe_float,
+)
 
 
 def test_bare_auth_statuses_are_fatal():
@@ -74,6 +81,26 @@ def test_parse_refresh_tokens_bad_shapes_are_none():
     assert parse_refresh_tokens({}) is None
     assert parse_refresh_tokens(None) is None
     assert parse_refresh_tokens("string") is None
+
+
+def test_safe_float():
+    assert safe_float(None) is None
+    assert safe_float("") is None
+    assert safe_float("abc") is None
+    assert safe_float([]) is None
+    # Zero must survive (a real reading), not collapse to None.
+    assert safe_float("0") == 0.0
+    assert safe_float(0) == 0.0
+    assert safe_float("12.5") == 12.5
+    assert safe_float(12.5) == 12.5
+
+
+def test_parse_datetime():
+    assert parse_datetime("20260618000000", "%Y%m%d%H%M%S") == datetime.datetime(2026, 6, 18, 0, 0, 0)
+    assert parse_datetime(None, "%Y%m%d%H%M%S") is None
+    assert parse_datetime("", "%Y%m%d%H%M%S") is None
+    assert parse_datetime("garbage", "%Y%m%d%H%M%S") is None
+    assert parse_datetime(12345, "%Y%m%d%H%M%S") is None
 
 
 if __name__ == "__main__":

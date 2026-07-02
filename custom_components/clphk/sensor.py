@@ -40,7 +40,9 @@ from .const import (
     CONF_RETRY_DELAY,
     is_auth_failure,
     is_transient,
+    parse_datetime,
     parse_refresh_tokens,
+    safe_float,
 
     CONF_GET_ACCT,
     CONF_GET_BILL,
@@ -670,23 +672,24 @@ class CLPSensor(SensorEntity):
                 "Authorization": self._access_token,
             },
         )
-        # Find the first entry with status 'Active'
+        # Find the first entry with status 'Active' that has a usable account number.
         active_data = next((item for item in response['data'] if item.get('status') == 'Active'), None)
-        if not active_data:
+        ca_no = active_data.get('caNo') if active_data else None
+        if not ca_no:
             self._account_number = None
             self._account = None
             if not self._no_account_warned:
-                _LOGGER.warning("%s: no active CLP account found in profile; will keep retrying.", self._name)
+                _LOGGER.warning("%s: no active CLP account with a usable account number; will keep retrying.", self._name)
                 self._no_account_warned = True
             # Leave _single_task_last_fetch_time unset so account detail is retried
-            # next cycle (recover from a transient empty response).
+            # next cycle (recover from a transient empty/incomplete response).
             return
 
-        self._account_number = active_data['caNo']
+        self._account_number = ca_no
         self._account = {
-            'number': active_data['caNo'],
-            'outstanding': float(active_data['outstandingAmount']),
-            'due_date': datetime.datetime.strptime(active_data['dueDate'], '%Y%m%d%H%M%S') if (active_data['dueDate'] is not None and active_data['dueDate'] != '') else None,
+            'number': ca_no,
+            'outstanding': safe_float(active_data.get('outstandingAmount')),
+            'due_date': parse_datetime(active_data.get('dueDate'), '%Y%m%d%H%M%S'),
         }
         self._no_account_warned = False
         self._single_task_last_fetch_time = datetime.datetime.now(self._timezone)
@@ -748,17 +751,18 @@ class CLPSensor(SensorEntity):
             },
         )
 
-        if response['data']:
+        data = response['data']
+        if data:
             self._estimation = {
-                "current_consumption": float(response['data']['currentConsumption']),
-                "current_cost": float(response['data']['currentCost']),
-                "current_end_date": datetime.datetime.strptime(response['data']['currentEndDate'], '%Y%m%d%H%M%S') if (response['data']['currentEndDate'] is not None and response['data']['currentEndDate'] != '') else None,
-                "current_start_date": datetime.datetime.strptime(response['data']['currentStartDate'], '%Y%m%d%H%M%S') if (response['data']['currentStartDate'] is not None and response['data']['currentStartDate'] != '') else None,
-                "deviation_percent": float(response['data']['deviationPercent']),
-                "estimation_consumption": float(response['data']['projectedConsumption']),
-                "estimation_cost": float(response['data']['projectedCost']),
-                "estimation_end_date": datetime.datetime.strptime(response['data']['projectedEndDate'], '%Y%m%d%H%M%S') if (response['data']['projectedEndDate'] is not None and response['data']['projectedEndDate'] != '') else None,
-                "estimation_start_date": datetime.datetime.strptime(response['data']['projectedStartDate'], '%Y%m%d%H%M%S') if (response['data']['projectedStartDate'] is not None and response['data']['projectedStartDate'] != '') else None,
+                "current_consumption": safe_float(data.get('currentConsumption')),
+                "current_cost": safe_float(data.get('currentCost')),
+                "current_end_date": parse_datetime(data.get('currentEndDate'), '%Y%m%d%H%M%S'),
+                "current_start_date": parse_datetime(data.get('currentStartDate'), '%Y%m%d%H%M%S'),
+                "deviation_percent": safe_float(data.get('deviationPercent')),
+                "estimation_consumption": safe_float(data.get('projectedConsumption')),
+                "estimation_cost": safe_float(data.get('projectedCost')),
+                "estimation_end_date": parse_datetime(data.get('projectedEndDate'), '%Y%m%d%H%M%S'),
+                "estimation_start_date": parse_datetime(data.get('projectedStartDate'), '%Y%m%d%H%M%S'),
             }
             self._daily_task_last_fetch_time = datetime.datetime.now(self._timezone)
 
@@ -947,29 +951,26 @@ class CLPSensor(SensorEntity):
             },
         )
 
-        if response['data']['consumptionData']:
+        consumption_data = response['data'].get('consumptionData') or []
+        if consumption_data:
             if self._type == '' or self._type.upper() == 'DAILY':
-                for row in sorted(response['data']['consumptionData'], key=lambda x: x['startdate'], reverse=True):
-                    if row['validateStatus'] == 'Y':
+                for row in sorted(consumption_data, key=lambda x: x.get('startdate') or '', reverse=True):
+                    if row.get('validateStatus') == 'Y':
                         self._state_data_type = 'DAILY'
-                        self._attr_native_value = float(row['kwhtotal'])
-                        self._attr_last_reset = datetime.datetime.strptime(row['startdate'], '%Y%m%d%H%M%S')
+                        self._attr_native_value = safe_float(row.get('kwhtotal'))
+                        self._attr_last_reset = parse_datetime(row.get('startdate'), '%Y%m%d%H%M%S')
                         break
 
             if self._get_daily:
                 daily = []
 
-                for row in response['data']['consumptionData']:
-                    start = None
-                    if row['startdate']:
-                        start = datetime.datetime.strptime(row['startdate'], '%Y%m%d%H%M%S')
-
+                for row in consumption_data:
                     daily.append({
-                        'start': start,
-                        'kwh': float(row['kwhtotal']),
+                        'start': parse_datetime(row.get('startdate'), '%Y%m%d%H%M%S'),
+                        'kwh': safe_float(row.get('kwhtotal')),
                     })
 
-                self._daily = sorted(daily, key=lambda x: x['start'], reverse=True)
+                self._daily = sorted(daily, key=lambda x: x['start'] or datetime.datetime.min, reverse=True)
 
             self._daily_task_last_fetch_time = datetime.datetime.now(self._timezone)
 
