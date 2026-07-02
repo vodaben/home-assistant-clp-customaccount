@@ -41,6 +41,7 @@ from .const import (
     CONF_RETRY_DELAY,
     is_auth_failure,
     is_transient,
+    parse_refresh_tokens,
 
     CONF_GET_ACCT,
     CONF_GET_BILL,
@@ -565,13 +566,22 @@ class CLPSensor(SensorEntity):
                 response_json = jsonlib.loads(response_text)
             except jsonlib.JSONDecodeError as ex:
                 raise Exception(f"Refresh token response is not JSON: {response_text[:200]}") from ex
-            if not isinstance(response_json, dict) or "data" not in response_json:
-                raise Exception(f"Invalid refresh token response: {response_text[:200]}")
-            response_data = response_json["data"]
 
-            self._access_token = response_data['access_token']
-            self._refresh_token = response_data['refresh_token']
-            self._access_token_expiry_time = response_data['expires_in']
+            tokens = parse_refresh_tokens(response_json)
+            if tokens is None:
+                # Well-formed 200 without usable tokens is unrecoverable: the
+                # refresh token may already be rotated/consumed, so retrying is
+                # futile. Stop cleanly instead of KeyError -> retry loop.
+                await self._handle_auth_failure(
+                    response.status,
+                    response_text,
+                    detail="refresh response was missing token fields",
+                )
+                raise FatalAuthError(
+                    "Refresh response missing access_token/refresh_token; "
+                    "tokens cleared, integration stopped."
+                )
+            self._access_token, self._refresh_token, self._access_token_expiry_time = tokens
 
             _LOGGER.debug(f"[SENSOR UPDATE] Persisting refreshed tokens to config entry.")
             config_entries = self.hass.config_entries.async_entries(DOMAIN)
@@ -583,7 +593,7 @@ class CLPSensor(SensorEntity):
                 data["access_token_expiry_time"] = self._access_token_expiry_time
                 self.hass.config_entries.async_update_entry(entry, data=data)
 
-    async def _handle_auth_failure(self, status: int, body: str):
+    async def _handle_auth_failure(self, status: int, body: str, detail: str = None):
         """Clear tokens, notify frontend, and stop integration on an auth failure."""
         self._account_number = None
         self._access_token = None
@@ -598,10 +608,11 @@ class CLPSensor(SensorEntity):
             data["access_token_expiry_time"] = ""
             self.hass.config_entries.async_update_entry(entry, data=data)
 
+        reason = f" ({detail})" if detail else ""
         message = (
-            "CLPHK authentication failed with HTTP "
-            f"{status}. Tokens were cleared and the integration was stopped. "
-            "Please reconfigure Access Token and Refresh Token.\n\n"
+            "CLPHK authentication failed"
+            f"{reason} with HTTP {status}. Tokens were cleared and the integration "
+            "was stopped. Please reconfigure Access Token and Refresh Token.\n\n"
             f"Response: {body[:300]}"
         )
         try:

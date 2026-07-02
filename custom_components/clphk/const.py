@@ -23,6 +23,27 @@ def is_transient(status):
     """True for 4xx statuses that are temporary and must not clear tokens."""
     return status in TRANSIENT_STATUSES
 
+
+def parse_refresh_tokens(response_json):
+    """Extract (access_token, refresh_token, expires_in) from a refresh response.
+
+    Returns None when the body is unusable (not a dict, no "data" dict, or the
+    access/refresh token is missing/empty). A well-formed refresh that lacks a
+    token is unrecoverable, so the caller treats None as a fatal auth failure
+    rather than retrying with a possibly-consumed refresh token. expires_in is
+    optional (not used for control flow) and returned as-is, defaulting to None.
+    """
+    if not isinstance(response_json, dict):
+        return None
+    data = response_json.get("data")
+    if not isinstance(data, dict):
+        return None
+    access = data.get("access_token")
+    refresh = data.get("refresh_token")
+    if not access or not refresh:
+        return None
+    return access, refresh, data.get("expires_in")
+
 CONF_GET_ACCT = 'get_account'
 CONF_GET_BILL = 'get_bill'
 CONF_GET_ESTIMATION = 'get_estimation'

@@ -11,7 +11,7 @@ sys.path.insert(
     os.path.join(os.path.dirname(__file__), "..", "custom_components", "clphk"),
 )
 
-from const import is_auth_failure, is_transient  # noqa: E402
+from const import is_auth_failure, is_transient, parse_refresh_tokens  # noqa: E402
 
 
 def test_bare_auth_statuses_are_fatal():
@@ -46,6 +46,34 @@ def test_transient_statuses():
     assert is_transient(400) is False
     assert is_transient(401) is False
     assert is_transient(500) is False
+
+
+def test_parse_refresh_tokens_valid():
+    assert parse_refresh_tokens(
+        {"data": {"access_token": "a", "refresh_token": "r", "expires_in": 3600}}
+    ) == ("a", "r", 3600)
+
+
+def test_parse_refresh_tokens_missing_expiry_is_ok():
+    # expires_in is not used for control flow; absence must not fail the refresh.
+    assert parse_refresh_tokens(
+        {"data": {"access_token": "a", "refresh_token": "r"}}
+    ) == ("a", "r", None)
+
+
+def test_parse_refresh_tokens_missing_or_empty_tokens_is_none():
+    assert parse_refresh_tokens({"data": {"refresh_token": "r"}}) is None
+    assert parse_refresh_tokens({"data": {"access_token": "a"}}) is None
+    assert parse_refresh_tokens({"data": {"access_token": "", "refresh_token": "r"}}) is None
+    assert parse_refresh_tokens({"data": {"access_token": "a", "refresh_token": None}}) is None
+
+
+def test_parse_refresh_tokens_bad_shapes_are_none():
+    assert parse_refresh_tokens({"data": None}) is None
+    assert parse_refresh_tokens({"data": "nope"}) is None
+    assert parse_refresh_tokens({}) is None
+    assert parse_refresh_tokens(None) is None
+    assert parse_refresh_tokens("string") is None
 
 
 if __name__ == "__main__":
