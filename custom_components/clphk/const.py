@@ -2,6 +2,27 @@ CONF_DOMAIN = 'clphk'
 
 CONF_RETRY_DELAY = 'retry_delay'
 
+# HTTP status / CLP error-code classification for token handling.
+# Only genuine auth failures clear stored tokens; transient statuses never do.
+AUTH_FAILURE_STATUSES = (401, 403)
+TRANSIENT_STATUSES = (408, 429)
+TOKEN_EXPIRED_CODES = (906, 100001)  # 906: access token expired; 100001: LR access_token error
+
+
+def is_auth_failure(status, error_code):
+    """True when a 4xx response means the credentials are unusable (wipe + stop).
+
+    A bare 401/403 is auth denial. TOKEN_EXPIRED_CODES only reach the wipe path
+    after a refresh has already been attempted (or when no refresh token exists),
+    i.e. the token is dead and cannot be recovered.
+    """
+    return status in AUTH_FAILURE_STATUSES or error_code in TOKEN_EXPIRED_CODES
+
+
+def is_transient(status):
+    """True for 4xx statuses that are temporary and must not clear tokens."""
+    return status in TRANSIENT_STATUSES
+
 CONF_GET_ACCT = 'get_account'
 CONF_GET_BILL = 'get_bill'
 CONF_GET_ESTIMATION = 'get_estimation'

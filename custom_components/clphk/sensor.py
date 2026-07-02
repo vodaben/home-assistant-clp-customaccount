@@ -39,6 +39,8 @@ from .const import (
     CONF_CLP_PUBLIC_KEY,
     CONF_DOMAIN,
     CONF_RETRY_DELAY,
+    is_auth_failure,
+    is_transient,
 
     CONF_GET_ACCT,
     CONF_GET_BILL,
@@ -415,7 +417,8 @@ class CLPSensor(SensorEntity):
             except aiohttp.ClientResponseError as e:
                 error_message = f"{e.status} {e.request_info.url}"
                 error_data = None
-                
+                error_content = ""
+
                 try:
                     # Try to read the response content only once and store it
                     error_content = await response.text()
@@ -458,23 +461,19 @@ class CLPSensor(SensorEntity):
                             retry_on_expired=False,
                         )
 
-                    self._account_number = None
-                    self._access_token = None
-                    self._refresh_token = None
-                    self._access_token_expiry_time = None
+                    # Only clear credentials on a genuine, unrecoverable auth failure.
+                    # Transient/non-auth 4xx (400/404/408/409/422/429/...) must NOT
+                    # wipe tokens - that would kill the integration on a rate limit
+                    # or a single bad request.
+                    if is_auth_failure(e.status, error_code):
+                        await self._handle_auth_failure(e.status, error_content or "")
+                        raise FatalAuthError(
+                            f"CLPHK authentication failed (HTTP {e.status}, code {error_code}); "
+                            "tokens cleared, integration stopped."
+                        )
 
-                    _LOGGER.debug(f"[SENSOR UPDATE] Clearing tokens from config entry.")
-                    config_entries = self.hass.config_entries.async_entries(DOMAIN)
-                    if config_entries:
-                        entry = config_entries[0]
-                        data = dict(entry.data)
-                        data["access_token"] = ""
-                        data["refresh_token"] = ""
-                        data["access_token_expiry_time"] = ""
-                        self.hass.config_entries.async_update_entry(entry, data=data)
+                    raise e
 
-                    raise Exception('HTTP 4xx error retry limit reached')
-                    
                 raise e
 
             try:
@@ -509,8 +508,14 @@ class CLPSensor(SensorEntity):
             )
             response_text = await response.text()
 
+        if is_transient(response.status):
+            # Rate limit / timeout on the refresh endpoint is temporary; keep the
+            # tokens and let the caller back off instead of forcing reconfigure.
+            raise Exception(
+                f"Refresh token request temporarily failed with {response.status}: {response_text[:200]}"
+            )
         if 400 <= response.status < 500:
-            await self._handle_refresh_auth_failure(response.status, response_text)
+            await self._handle_auth_failure(response.status, response_text)
             raise FatalAuthError(
                 "Refresh token invalid/expired. CLPHK integration stopped; please reconfigure tokens."
             )
@@ -541,8 +546,8 @@ class CLPSensor(SensorEntity):
             data["access_token_expiry_time"] = self._access_token_expiry_time
             self.hass.config_entries.async_update_entry(entry, data=data)
 
-    async def _handle_refresh_auth_failure(self, status: int, body: str):
-        """Clear tokens, notify frontend, and stop integration on refresh 4xx."""
+    async def _handle_auth_failure(self, status: int, body: str):
+        """Clear tokens, notify frontend, and stop integration on an auth failure."""
         self._account_number = None
         self._access_token = None
         self._refresh_token = None
@@ -557,7 +562,7 @@ class CLPSensor(SensorEntity):
             self.hass.config_entries.async_update_entry(entry, data=data)
 
         message = (
-            "CLPHK token refresh failed with HTTP "
+            "CLPHK authentication failed with HTTP "
             f"{status}. Tokens were cleared and the integration was stopped. "
             "Please reconfigure Access Token and Refresh Token.\n\n"
             f"Response: {body[:300]}"
