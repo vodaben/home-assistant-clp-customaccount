@@ -441,6 +441,11 @@ class CLPSensor(SensorEntity):
                         retry_on_expired
                         and "refresh_token" not in url
                         and self._refresh_token
+                        # Only refresh when the failed request actually carried an
+                        # access token. Login/refresh calls have no Authorization, so
+                        # they can never re-enter _refresh_access_token (which would
+                        # deadlock on the non-reentrant token_lock).
+                        and (headers or {}).get("Authorization")
                         and (
                             error_code in (906, 100001)
                             or (e.status == 403 and error_data is None)
@@ -448,7 +453,8 @@ class CLPSensor(SensorEntity):
                     )
                     if should_refresh:
                         _LOGGER.debug("Access token likely expired (status=%s, code=%s, body_readable=%s). Refreshing and retrying once.", e.status, error_code, error_data is not None)
-                        await self._refresh_access_token()
+                        stale_token = (headers or {}).get("Authorization")
+                        await self._refresh_access_token(stale_access_token=stale_token)
                         retry_headers = dict(headers or {})
                         if "Authorization" in retry_headers:
                             retry_headers["Authorization"] = self._access_token
@@ -491,60 +497,90 @@ class CLPSensor(SensorEntity):
                 _LOGGER.error(f"{response.status} {response.url} : {response_text}")
                 raise
 
-    async def _refresh_access_token(self):
-        """Refresh access token using stored refresh token and persist it."""
-        if not self._refresh_token:
-            raise Exception("No refresh token available")
+    async def _refresh_access_token(self, stale_access_token=None):
+        """Refresh access token using stored refresh token and persist it.
 
-        refresh_headers = dict(API_DEFAULT_HEADERS)
-        refresh_headers["Content-Type"] = "application/json"
-
-        async with asyncio.timeout(self._timeout):
-            response = await self._session.request(
-                "POST",
-                "https://api.clp.com.hk/ts1/ms/profile/identity/manage/account/refresh_token",
-                headers=refresh_headers,
-                json={"refreshToken": self._refresh_token},
-            )
-            response_text = await response.text()
-
-        if is_transient(response.status):
-            # Rate limit / timeout on the refresh endpoint is temporary; keep the
-            # tokens and let the caller back off instead of forcing reconfigure.
-            raise Exception(
-                f"Refresh token request temporarily failed with {response.status}: {response_text[:200]}"
-            )
-        if 400 <= response.status < 500:
-            await self._handle_auth_failure(response.status, response_text)
+        Serialized via the shared token_lock so the two sensors cannot both POST
+        the (rotating) refresh_token concurrently. stale_access_token is the token
+        the failed request carried; if it no longer matches once we hold the lock,
+        another task already refreshed (or auth was cleared) and we must not fire a
+        second refresh with a possibly-rotated refresh_token.
+        """
+        token_state = self.hass.data.get(DOMAIN)
+        token_lock = token_state.get("token_lock") if token_state else None
+        if token_lock is None:
             raise FatalAuthError(
-                "Refresh token invalid/expired. CLPHK integration stopped; please reconfigure tokens."
-            )
-        if response.status >= 500:
-            raise Exception(
-                f"Refresh token request failed with {response.status}: {response_text[:200]}"
+                "CLPHK token state/lock unavailable; integration is unloading or not initialized."
             )
 
-        try:
-            response_json = jsonlib.loads(response_text)
-        except jsonlib.JSONDecodeError as ex:
-            raise Exception(f"Refresh token response is not JSON: {response_text[:200]}") from ex
-        if not isinstance(response_json, dict) or "data" not in response_json:
-            raise Exception(f"Invalid refresh token response: {response_text[:200]}")
-        response_data = response_json["data"]
+        async with token_lock:
+            # Unload-then-reload can replace hass.data[DOMAIN] with a fresh dict/lock
+            # while we waited; our lock would then guard nothing.
+            if self.hass.data.get(DOMAIN) is not token_state:
+                raise FatalAuthError(
+                    "CLPHK state replaced (reload) while awaiting refresh lock; aborting."
+                )
 
-        self._access_token = response_data['access_token']
-        self._refresh_token = response_data['refresh_token']
-        self._access_token_expiry_time = response_data['expires_in']
+            if stale_access_token is not None and self._access_token != stale_access_token:
+                if self._access_token is None:
+                    raise FatalAuthError(
+                        "CLPHK auth cleared by a concurrent failure; aborting refresh."
+                    )
+                _LOGGER.debug("Access token already refreshed by another task; skipping refresh.")
+                return
 
-        _LOGGER.debug(f"[SENSOR UPDATE] Persisting refreshed tokens to config entry.")
-        config_entries = self.hass.config_entries.async_entries(DOMAIN)
-        if config_entries:
-            entry = config_entries[0]
-            data = dict(entry.data)
-            data["access_token"] = self._access_token
-            data["refresh_token"] = self._refresh_token
-            data["access_token_expiry_time"] = self._access_token_expiry_time
-            self.hass.config_entries.async_update_entry(entry, data=data)
+            if not self._refresh_token:
+                raise Exception("No refresh token available")
+
+            refresh_headers = dict(API_DEFAULT_HEADERS)
+            refresh_headers["Content-Type"] = "application/json"
+
+            async with asyncio.timeout(self._timeout):
+                response = await self._session.request(
+                    "POST",
+                    "https://api.clp.com.hk/ts1/ms/profile/identity/manage/account/refresh_token",
+                    headers=refresh_headers,
+                    json={"refreshToken": self._refresh_token},
+                )
+                response_text = await response.text()
+
+            if is_transient(response.status):
+                # Rate limit / timeout on the refresh endpoint is temporary; keep the
+                # tokens and let the caller back off instead of forcing reconfigure.
+                raise Exception(
+                    f"Refresh token request temporarily failed with {response.status}: {response_text[:200]}"
+                )
+            if 400 <= response.status < 500:
+                await self._handle_auth_failure(response.status, response_text)
+                raise FatalAuthError(
+                    "Refresh token invalid/expired. CLPHK integration stopped; please reconfigure tokens."
+                )
+            if response.status >= 500:
+                raise Exception(
+                    f"Refresh token request failed with {response.status}: {response_text[:200]}"
+                )
+
+            try:
+                response_json = jsonlib.loads(response_text)
+            except jsonlib.JSONDecodeError as ex:
+                raise Exception(f"Refresh token response is not JSON: {response_text[:200]}") from ex
+            if not isinstance(response_json, dict) or "data" not in response_json:
+                raise Exception(f"Invalid refresh token response: {response_text[:200]}")
+            response_data = response_json["data"]
+
+            self._access_token = response_data['access_token']
+            self._refresh_token = response_data['refresh_token']
+            self._access_token_expiry_time = response_data['expires_in']
+
+            _LOGGER.debug(f"[SENSOR UPDATE] Persisting refreshed tokens to config entry.")
+            config_entries = self.hass.config_entries.async_entries(DOMAIN)
+            if config_entries:
+                entry = config_entries[0]
+                data = dict(entry.data)
+                data["access_token"] = self._access_token
+                data["refresh_token"] = self._refresh_token
+                data["access_token_expiry_time"] = self._access_token_expiry_time
+                self.hass.config_entries.async_update_entry(entry, data=data)
 
     async def _handle_auth_failure(self, status: int, body: str):
         """Clear tokens, notify frontend, and stop integration on an auth failure."""
