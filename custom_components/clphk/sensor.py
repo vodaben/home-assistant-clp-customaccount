@@ -673,7 +673,7 @@ class CLPSensor(SensorEntity):
             },
         )
         # Find the first entry with status 'Active' that has a usable account number.
-        active_data = next((item for item in response['data'] if item.get('status') == 'Active'), None)
+        active_data = next((item for item in (response['data'] or []) if item.get('status') == 'Active'), None)
         ca_no = active_data.get('caNo') if active_data else None
         if not ca_no:
             self._account_number = None
@@ -712,12 +712,13 @@ class CLPSensor(SensorEntity):
             },
         )
 
-        if response['data']['transactions']:
+        transactions = (response['data'] or {}).get('transactions') or []
+        if transactions:
             bills = {
                 'bill': [],
                 'payment': [],
             }
-            for row in response['data']['transactions']:
+            for row in transactions:
                 if row['type'] != 'bill' and row['type'] != 'payment':
                     continue
 
@@ -878,15 +879,16 @@ class CLPSensor(SensorEntity):
                 },
             )
 
-            if response['data']['results']:
+            results = (response['data'] or {}).get('results') or []
+            if results:
                 if i == self._get_hourly_days and (self._type == '' or self._type.upper() == 'HOURLY'):
                     self._state_data_type = 'HOURLY'
-                    self._attr_native_value = response['data']['results'][-1]['kwhTotal']
+                    self._attr_native_value = results[-1]['kwhTotal']
                     self._attr_last_reset = datetime.datetime.strptime(
-                        response['data']['results'][-1]['expireDate'], '%Y%m%d%H%M%S')
+                        results[-1]['expireDate'], '%Y%m%d%H%M%S')
 
                 if self._get_hourly:
-                    for row in response['data']['results']:
+                    for row in results:
                         hourly.append({
                             'start': datetime.datetime.strptime(row['startDate'], '%Y%m%d%H%M%S'),
                             'kwh': row['kwhTotal'],
@@ -915,15 +917,16 @@ class CLPSensor(SensorEntity):
             },
         )
 
-        if response['data']['consumptionData']:
+        consumption_data = (response['data'] or {}).get('consumptionData') or []
+        if consumption_data:
             if self._type == '' or self._type.upper() == 'BIMONTHLY':
                 self._state_data_type = 'BIMONTHLY'
-                self._attr_native_value = float(response['data']['consumptionData'][-1]['kwhtotal'])
-                self._attr_last_reset = datetime.datetime.strptime(response['data']['consumptionData'][-1]['enddate'], '%Y%m%d%H%M%S')
+                self._attr_native_value = float(consumption_data[-1]['kwhtotal'])
+                self._attr_last_reset = datetime.datetime.strptime(consumption_data[-1]['enddate'], '%Y%m%d%H%M%S')
 
             if self._get_bill:
                 bills = []
-                for row in response['data']['consumptionData']:
+                for row in consumption_data:
                     bills.append({
                         'start': datetime.datetime.strptime(row['startdate'], '%Y%m%d%H%M%S'),
                         'end': datetime.datetime.strptime(row['enddate'], '%Y%m%d%H%M%S'),
@@ -951,7 +954,7 @@ class CLPSensor(SensorEntity):
             },
         )
 
-        consumption_data = response['data'].get('consumptionData') or []
+        consumption_data = (response['data'] or {}).get('consumptionData') or []
         if consumption_data:
             if self._type == '' or self._type.upper() == 'DAILY':
                 for row in sorted(consumption_data, key=lambda x: x.get('startdate') or '', reverse=True):
@@ -997,9 +1000,10 @@ class CLPSensor(SensorEntity):
                 },
             )
 
-            if response['data']['consumptionData']:
+            consumption_data = (response['data'] or {}).get('consumptionData') or []
+            if consumption_data:
                 if i == 1 and (self._type == '' or self._type.upper() == 'HOURLY'):
-                    for row in sorted(response['data']['consumptionData'], key=lambda x: x['startdate'], reverse=True):
+                    for row in sorted(consumption_data, key=lambda x: x['startdate'], reverse=True):
                         if row['validateStatus'] == 'Y':
                             self._state_data_type = 'HOURLY'
                             self._attr_native_value = float(row['kwhtotal'])
@@ -1007,7 +1011,7 @@ class CLPSensor(SensorEntity):
                             break
 
                 if self._get_hourly:
-                    for row in response['data']['consumptionData']:
+                    for row in consumption_data:
                         if row['validateStatus'] == 'N':
                             continue
 
