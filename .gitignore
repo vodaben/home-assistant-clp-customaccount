@@ -1,2 +1,9 @@
 .idea
 __pycache__
+.env
+.playwright-cli/
+tmp/
+scripts/
+home.yaml
+otp-input.yaml
+otp-state.yaml
