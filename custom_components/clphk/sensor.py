@@ -308,6 +308,7 @@ class CLPSensor(SensorEntity):
         self._single_task_last_fetch_time = None
         self._hourly_task_last_fetch_time = None
         self._daily_task_last_fetch_time = None
+        self._no_account_warned = False
         self._4xx_error_retry = 0
 
     @property
@@ -700,13 +701,20 @@ class CLPSensor(SensorEntity):
         if not active_data:
             self._account_number = None
             self._account = None
-        else:
-            self._account_number = active_data['caNo']
-            self._account = {
-                'number': active_data['caNo'],
-                'outstanding': float(active_data['outstandingAmount']),
-                'due_date': datetime.datetime.strptime(active_data['dueDate'], '%Y%m%d%H%M%S') if (active_data['dueDate'] is not None and active_data['dueDate'] != '') else None,
-            }
+            if not self._no_account_warned:
+                _LOGGER.warning("%s: no active CLP account found in profile; will keep retrying.", self._name)
+                self._no_account_warned = True
+            # Leave _single_task_last_fetch_time unset so account detail is retried
+            # next cycle (recover from a transient empty response).
+            return
+
+        self._account_number = active_data['caNo']
+        self._account = {
+            'number': active_data['caNo'],
+            'outstanding': float(active_data['outstandingAmount']),
+            'due_date': datetime.datetime.strptime(active_data['dueDate'], '%Y%m%d%H%M%S') if (active_data['dueDate'] is not None and active_data['dueDate'] != '') else None,
+        }
+        self._no_account_warned = False
         self._single_task_last_fetch_time = datetime.datetime.now(self._timezone)
 
 
@@ -1057,6 +1065,10 @@ class CLPSensor(SensorEntity):
                     _LOGGER.debug(f"[SENSOR UPDATE] Fetching account detail.")
                     await self.main_get_account_detail()
 
+            if not self._account_number:
+                _LOGGER.debug("%s: no account number; skipping data fetch this cycle.", self._name)
+                return
+
             if not self._daily_task_last_fetch_time or datetime.datetime.now(self._timezone) > self._daily_task_last_fetch_time + DAILY_TASK_INTERVAL:
                 if self._get_bill:
                     _LOGGER.debug(f"[SENSOR UPDATE] Fetching bill.")
@@ -1084,6 +1096,10 @@ class CLPSensor(SensorEntity):
                 if not self._account_number:
                     _LOGGER.debug(f"[SENSOR UPDATE] Fetching renewable account detail.")
                     await self.main_get_account_detail()
+
+            if not self._account_number:
+                _LOGGER.debug("%s: no account number; skipping data fetch this cycle.", self._name)
+                return
 
             if not self._daily_task_last_fetch_time or datetime.datetime.now(self._timezone) > self._daily_task_last_fetch_time + DAILY_TASK_INTERVAL:
                 if self._get_bill or self._type == '' or self._type.upper() == 'BIMONTHLY':
