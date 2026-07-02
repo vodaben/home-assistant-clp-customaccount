@@ -783,14 +783,15 @@ class CLPSensor(SensorEntity):
         )
 
         if response['data']:
-            if self._type == '' or self._type.upper() == 'BIMONTHLY':
+            results = response['data'].get('results') or []
+            if results and (self._type == '' or self._type.upper() == 'BIMONTHLY'):
                 self._state_data_type = 'BIMONTHLY'
-                self._attr_native_value = response['data']['results'][0]['totKwh']
-                self._attr_last_reset = datetime.datetime.strptime(response['data']['results'][0]['endabrpe'], '%Y%m%d')
+                self._attr_native_value = results[0]['totKwh']
+                self._attr_last_reset = datetime.datetime.strptime(results[0]['endabrpe'], '%Y%m%d')
 
             if self._get_bimonthly:
                 bimonthly = []
-                for row in response['data']['results']:
+                for row in results:
                     bimonthly.append({
                         'end': datetime.datetime.strptime(row['endabrpe'], '%Y%m%d'),
                         'kwh': row['totKwh'],
@@ -819,15 +820,16 @@ class CLPSensor(SensorEntity):
         )
 
         if response['data']:
-            if self._type == '' or self._type.upper() == 'DAILY':
+            results = response['data'].get('results') or []
+            if results and (self._type == '' or self._type.upper() == 'DAILY'):
                 self._state_data_type = 'DAILY'
-                self._attr_native_value = response['data']['results'][-1]['kwhTotal']
+                self._attr_native_value = results[-1]['kwhTotal']
                 self._attr_last_reset = datetime.datetime.strptime(
-                    response['data']['results'][-1]['expireDate'], '%Y%m%d%H%M%S')
+                    results[-1]['expireDate'], '%Y%m%d%H%M%S')
 
             if self._get_daily:
                 daily = []
-                for row in response['data']['results']:
+                for row in results:
                     start = None
                     if row['startDate']:
                         start = datetime.datetime.strptime(row['startDate'], '%Y%m%d%H%M%S')
