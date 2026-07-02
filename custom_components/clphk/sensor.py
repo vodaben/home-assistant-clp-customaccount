@@ -30,7 +30,6 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import aiohttp_client
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.util import Throttle
 
@@ -88,7 +87,6 @@ MIN_TIME_BETWEEN_UPDATES = datetime.timedelta(seconds=300)
 DAILY_TASK_INTERVAL = datetime.timedelta(hours=12)
 HOURLY_TASK_INTERVAL = datetime.timedelta(minutes=30)
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
-HTTP_4xx_ERROR_RETRY_LIMIT = 3
 
 DOMAIN = CONF_DOMAIN
 
@@ -202,53 +200,19 @@ def get_dates(timezone):
     }
 
 
-class ExponentialBackoff:
-    def __init__(self, min_delay: int, max_delay: int, factor: float = 2.0):
-        self.min_delay = min_delay
-        self.max_delay = max_delay
-        self.factor = factor
-        self.delay = min_delay
-        self.tries = 0
-
-    def reset(self):
-        self.delay = self.min_delay
-        self.tries = 0
-
-    def increment(self):
-        self.tries += 1
-        self.delay = min(self.max_delay, self.delay * self.factor)
-        return self.delay
-
-
 def handle_errors(func):
+    """Record a fetch failure on the entity and swallow it so sibling fetches in
+    the same update cycle still run. FatalAuthError is re-raised so async_update
+    can stop the cycle. Retries are driven by Home Assistant's own polling,
+    rate-limited by the @Throttle on async_update."""
     async def wrapper(self, *args, **kwargs):
         try:
-            # Reset backoff and error state on successful call
-            if not hasattr(self, '_backoff'):
-                self._backoff = ExponentialBackoff(
-                    min_delay=self._retry_delay,
-                    max_delay=3600  # Max 1 hour between retries
-                )
-            
-            result = await func(self, *args, **kwargs)
-            self._backoff.reset()
-            self._error = None
-            return result
-            
+            return await func(self, *args, **kwargs)
+        except FatalAuthError:
+            raise
         except Exception as e:
-            error_msg = str(e)
-            self._error = error_msg
-            _LOGGER.error(f"{self._name} ERROR: {error_msg}", exc_info=True)
-
-            if isinstance(e, FatalAuthError):
-                _LOGGER.error("%s: Fatal auth error. Integration has been stopped.", self._name)
-                return None
-            
-            # Schedule next retry with exponential backoff
-            next_retry_delay = self._backoff.increment()
-            _LOGGER.info(f"{self._name}: Scheduling retry in {next_retry_delay} seconds")
-            async_call_later(self.hass, next_retry_delay, self.async_update)
-            
+            self._error = str(e)
+            _LOGGER.error(f"{self._name} ERROR: {e}", exc_info=True)
             return None
 
     return wrapper
@@ -310,7 +274,6 @@ class CLPSensor(SensorEntity):
         self._hourly_task_last_fetch_time = None
         self._daily_task_last_fetch_time = None
         self._no_account_warned = False
-        self._4xx_error_retry = 0
 
     @property
     def unique_id(self):
@@ -1059,11 +1022,17 @@ class CLPSensor(SensorEntity):
     @Throttle(MIN_TIME_BETWEEN_UPDATES)
     async def async_update(self) -> None:
         _LOGGER.debug(f"[SENSOR UPDATE] Starting update for {self._sensor_type}, access_token_expiry_time={self._access_token_expiry_time}")
+        self._error = None
+        try:
+            await self._fetch_all()
+        except FatalAuthError as e:
+            # Credentials are gone and the integration is being unloaded; surface
+            # the reason on the entity and stop. Home Assistant's own polling
+            # (rate-limited by @Throttle) drives retries for recoverable errors.
+            self._error = str(e)
+            _LOGGER.error("%s: fatal auth error; integration stopped.", self._name)
 
-        if self._4xx_error_retry > HTTP_4xx_ERROR_RETRY_LIMIT:
-            _LOGGER.debug(f"[SENSOR UPDATE] 4xx error retry limit reached, skipping update.")
-            return
-
+    async def _fetch_all(self) -> None:
         await self.auth()
 
         if not self._access_token:
