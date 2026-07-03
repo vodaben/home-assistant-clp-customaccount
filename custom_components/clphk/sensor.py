@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import datetime
 import json as jsonlib
 import logging
@@ -10,9 +9,6 @@ import aiohttp
 import homeassistant.helpers.config_validation as cv
 import pytz
 import voluptuous as vol
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import padding
 from dateutil import relativedelta
 from homeassistant.components.lock import PLATFORM_SCHEMA
 from homeassistant.components.sensor import (
@@ -33,9 +29,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.util import Throttle
 
-from . import verify_otp
 from .const import (
-    CONF_CLP_PUBLIC_KEY,
     CONF_DOMAIN,
     CONF_RETRY_DELAY,
     is_auth_failure,
@@ -134,7 +128,6 @@ async def async_setup_platform(
                 hass=hass,
                 sensor_type='main',
                 name=discovery_info.get(CONF_NAME, "CLP"),
-                email=discovery_info.get("email_address", discovery_info.get("email", None)),
                 timeout=int(discovery_info.get(CONF_TIMEOUT, 30)),
                 retry_delay=int(discovery_info.get(CONF_RETRY_DELAY, 300)),
                 type=discovery_info.get(CONF_TYPE, ""),
@@ -157,7 +150,6 @@ async def async_setup_platform(
                     hass=hass,
                     sensor_type='renewable_energy',
                     name=discovery_info.get(CONF_RES_NAME, "CLP Renewable Energy"),
-                    email=discovery_info.get("email_address", discovery_info.get("email", None)),
                     timeout=int(discovery_info.get(CONF_TIMEOUT, 30)),
                     retry_delay=int(discovery_info.get(CONF_RETRY_DELAY, 300)),
                     type=discovery_info.get(CONF_RES_TYPE, ""),
@@ -228,7 +220,6 @@ class CLPSensor(SensorEntity):
             hass,
             sensor_type: str,
             name: str,
-            email: str,
             timeout: int,
             retry_delay: int,
             type: str = None,
@@ -240,11 +231,10 @@ class CLPSensor(SensorEntity):
             get_hourly: bool = False,
             get_hourly_days: int = 1,
     ) -> None:
-        _LOGGER.debug(f"[SENSOR INIT] type={sensor_type}, name={name}, email={email}, tokens={{'access_token': {getattr(self, '_access_token', None)}, 'expiry': {getattr(self, '_access_token_expiry_time', None)}}}")
+        _LOGGER.debug(f"[SENSOR INIT] type={sensor_type}, name={name}")
         self.hass = hass
         self._sensor_type = sensor_type
         self._name = name
-        self._email = email
         self._timeout = timeout
         self._retry_delay = retry_delay
         self._type = type
@@ -596,71 +586,6 @@ class CLPSensor(SensorEntity):
 
         for entry in config_entries:
             self.hass.async_create_task(self.hass.config_entries.async_unload(entry.entry_id))
-
-
-    @handle_errors
-    async def auth(self):
-        token_lock = self._token_state["token_lock"]
-        async with token_lock:
-            if not self._access_token and self.hass.states.get('sensor.clp_email_otp') is not None:
-                _LOGGER.debug("Requesting OTP")
-
-                state = self.hass.states.get('sensor.clp_email_otp')
-                original_otp = state.state if state else None
-
-                public_key = serialization.load_pem_public_key(CONF_CLP_PUBLIC_KEY.encode())
-                await self.api_request(
-                    method="POST",
-                    url="https://api.clp.com.hk/ts1/ms/profile/register/eligibilityCheckAndLogin",
-                    json={
-                        "email": base64.b64encode(public_key.encrypt(
-                            self._email.encode('utf-8'),
-                            padding.OAEP(
-                                mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                                algorithm=hashes.SHA256(),
-                                label=None,
-                            )
-                        )).decode(),
-                        "phone": "",
-                        "type": base64.b64encode(public_key.encrypt(
-                            "email".encode('utf-8'),
-                            padding.OAEP(
-                                mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                                algorithm=hashes.SHA256(),
-                                label=None,
-                            )
-                        )).decode(),
-                    },
-                )
-
-                await asyncio.sleep(10)
-
-                max_attempts = 15
-                attempt = 0
-                otp = None
-                while attempt < max_attempts:
-                    state = self.hass.states.get('sensor.clp_email_otp')
-                    otp = state.state if state else None
-
-                    if otp and otp != original_otp:
-                        break
-
-                    _LOGGER.debug(f"Waiting for OTP email (attempt {attempt+1}/{max_attempts})...")
-                    await asyncio.sleep(5)
-                    attempt += 1
-                if not otp:
-                    _LOGGER.error("OTP was not received in time. Please check your email/IMAP integration.")
-                    raise Exception("OTP not received from sensor.clp_email_otp")
-
-                try:
-                    token_data = await verify_otp(self._session, self._email, otp)
-                    self._access_token = token_data.get("access_token")
-                    self._refresh_token = token_data.get("refresh_token")
-                    self._access_token_expiry_time = token_data.get("expires_in")
-                    _LOGGER.debug(f"Access token obtained: {self._access_token}")
-                except Exception as ex:
-                    _LOGGER.error(f"Failed to verify OTP and obtain access token: {ex}")
-                    raise
 
 
     @handle_errors
@@ -1040,8 +965,6 @@ class CLPSensor(SensorEntity):
             _LOGGER.error("%s: fatal auth error; integration stopped.", self._name)
 
     async def _fetch_all(self) -> None:
-        await self.auth()
-
         if not self._access_token:
             _LOGGER.debug(f"[SENSOR UPDATE] No access token, skipping data fetch.")
             return

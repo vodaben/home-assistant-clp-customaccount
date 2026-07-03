@@ -10,7 +10,6 @@
   "config_flow": true,
   "requirements": [
     "aiohttp",
-    "cryptography",
     "pytz"
   ],
   "loggers": ["clphk"],
