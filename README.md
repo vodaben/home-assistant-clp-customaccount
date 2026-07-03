@@ -141,6 +141,7 @@ At that point, reconfigure with fresh tokens.
 ### Common problem
 
 - More than one `clphk` entry will cause issues. Avoid multiple entries.
+- If your CLP login owns more than one account, only the first active account is reported; the rest are ignored (a warning is logged).
 - Timeouts may occur on slower hardware. Increase `timeout` value to mitigate.
 - If you see `CLPHK Authentication Failed` notification, refresh token was rejected by CLP and the integration was stopped. Reconfigure with new tokens.
 

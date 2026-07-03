@@ -260,6 +260,7 @@ class CLPSensor(SensorEntity):
         self._hourly_task_last_fetch_time = None
         self._daily_task_last_fetch_time = None
         self._no_account_warned = False
+        self._multi_account_warned = False
 
     @property
     def unique_id(self):
@@ -590,8 +591,18 @@ class CLPSensor(SensorEntity):
                 "Authorization": self._access_token,
             },
         )
-        # Find the first entry with status 'Active' that has a usable account number.
-        active_data = next((item for item in (response['data'] or []) if item.get('status') == 'Active'), None)
+        # This integration reports a single account: the first entry with status
+        # 'Active'. Warn once if the login owns more than one active account so the
+        # user knows the rest are not reported.
+        active_accounts = [item for item in (response['data'] or []) if item.get('status') == 'Active']
+        if len(active_accounts) > 1 and not self._multi_account_warned:
+            _LOGGER.warning(
+                "%s: login has %d active CLP accounts; only the first is reported, the rest are ignored.",
+                self._name,
+                len(active_accounts),
+            )
+            self._multi_account_warned = True
+        active_data = next(iter(active_accounts), None)
         ca_no = active_data.get('caNo') if active_data else None
         if not ca_no:
             self._account_number = None
