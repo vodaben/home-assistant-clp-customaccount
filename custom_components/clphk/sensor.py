@@ -648,22 +648,23 @@ class CLPSensor(SensorEntity):
                 'payment': [],
             }
             for row in transactions:
-                if row['type'] != 'bill' and row['type'] != 'payment':
+                row_type = row.get('type')
+                if row_type not in ('bill', 'payment'):
                     continue
 
                 record = {
-                    'total': float(row['total']),
-                    'transaction_date': datetime.datetime.strptime(row['tranDate'], '%Y%m%d%H%M%S'),
+                    'total': safe_float(row.get('total')),
+                    'transaction_date': parse_datetime(row.get('tranDate'), '%Y%m%d%H%M%S'),
                 }
 
-                if row['type'] == 'bill':
-                    record['from_date'] = datetime.datetime.strptime(row['fromDate'], '%Y%m%d%H%M%S')
-                    record['to_date'] = datetime.datetime.strptime(row['toDate'], '%Y%m%d%H%M%S')
+                if row_type == 'bill':
+                    record['from_date'] = parse_datetime(row.get('fromDate'), '%Y%m%d%H%M%S')
+                    record['to_date'] = parse_datetime(row.get('toDate'), '%Y%m%d%H%M%S')
 
-                bills[row['type']].append(record)
+                bills[row_type].append(record)
 
-            bills['bill'] = sorted(bills['bill'], key=lambda x: x['transaction_date'], reverse=True)
-            bills['payment'] = sorted(bills['payment'], key=lambda x: x['transaction_date'], reverse=True)
+            bills['bill'] = sorted(bills['bill'], key=lambda x: x['transaction_date'] or datetime.datetime.min, reverse=True)
+            bills['payment'] = sorted(bills['payment'], key=lambda x: x['transaction_date'] or datetime.datetime.min, reverse=True)
             self._bills = bills
             self._daily_task_last_fetch_time = datetime.datetime.now(self._timezone)
 
@@ -720,17 +721,17 @@ class CLPSensor(SensorEntity):
             results = response['data'].get('results') or []
             if results and (self._type == '' or self._type.upper() == 'BIMONTHLY'):
                 self._state_data_type = 'BIMONTHLY'
-                self._attr_native_value = results[0]['totKwh']
-                self._attr_last_reset = datetime.datetime.strptime(results[0]['endabrpe'], '%Y%m%d')
+                self._attr_native_value = safe_float(results[0].get('totKwh'))
+                self._attr_last_reset = parse_datetime(results[0].get('endabrpe'), '%Y%m%d')
 
             if self._get_bimonthly:
                 bimonthly = []
                 for row in results:
                     bimonthly.append({
-                        'end': datetime.datetime.strptime(row['endabrpe'], '%Y%m%d'),
-                        'kwh': row['totKwh'],
+                        'end': parse_datetime(row.get('endabrpe'), '%Y%m%d'),
+                        'kwh': safe_float(row.get('totKwh')),
                     })
-                self._bimonthly = sorted(bimonthly, key=lambda x: x['end'], reverse=True)
+                self._bimonthly = sorted(bimonthly, key=lambda x: x['end'] or datetime.datetime.min, reverse=True)
             self._daily_task_last_fetch_time = datetime.datetime.now(self._timezone)
 
 
@@ -757,27 +758,19 @@ class CLPSensor(SensorEntity):
             results = response['data'].get('results') or []
             if results and (self._type == '' or self._type.upper() == 'DAILY'):
                 self._state_data_type = 'DAILY'
-                self._attr_native_value = results[-1]['kwhTotal']
-                self._attr_last_reset = datetime.datetime.strptime(
-                    results[-1]['expireDate'], '%Y%m%d%H%M%S')
+                self._attr_native_value = safe_float(results[-1].get('kwhTotal'))
+                self._attr_last_reset = parse_datetime(
+                    results[-1].get('expireDate'), '%Y%m%d%H%M%S')
 
             if self._get_daily:
                 daily = []
                 for row in results:
-                    start = None
-                    if row['startDate']:
-                        start = datetime.datetime.strptime(row['startDate'], '%Y%m%d%H%M%S')
-
-                    end = None
-                    if row['expireDate']:
-                        end = datetime.datetime.strptime(row['expireDate'], '%Y%m%d%H%M%S')
-
                     daily.append({
-                        'start': start,
-                        'end': end,
-                        'kwh': row['kwhTotal'],
+                        'start': parse_datetime(row.get('startDate'), '%Y%m%d%H%M%S'),
+                        'end': parse_datetime(row.get('expireDate'), '%Y%m%d%H%M%S'),
+                        'kwh': safe_float(row.get('kwhTotal')),
                     })
-                self._daily = sorted(daily, key=lambda x: x['start'], reverse=True)
+                self._daily = sorted(daily, key=lambda x: x['start'] or datetime.datetime.min, reverse=True)
 
             self._daily_task_last_fetch_time = datetime.datetime.now(self._timezone)
 
@@ -812,21 +805,21 @@ class CLPSensor(SensorEntity):
             if results:
                 if i == self._get_hourly_days and (self._type == '' or self._type.upper() == 'HOURLY'):
                     self._state_data_type = 'HOURLY'
-                    self._attr_native_value = results[-1]['kwhTotal']
-                    self._attr_last_reset = datetime.datetime.strptime(
-                        results[-1]['expireDate'], '%Y%m%d%H%M%S')
+                    self._attr_native_value = safe_float(results[-1].get('kwhTotal'))
+                    self._attr_last_reset = parse_datetime(
+                        results[-1].get('expireDate'), '%Y%m%d%H%M%S')
 
                 if self._get_hourly:
                     for row in results:
                         hourly.append({
-                            'start': datetime.datetime.strptime(row['startDate'], '%Y%m%d%H%M%S'),
-                            'kwh': row['kwhTotal'],
+                            'start': parse_datetime(row.get('startDate'), '%Y%m%d%H%M%S'),
+                            'kwh': safe_float(row.get('kwhTotal')),
                         })
 
                 self._hourly_task_last_fetch_time = datetime.datetime.now(self._timezone)
 
         if self._get_hourly:
-            self._hourly = sorted(hourly, key=lambda x: x['start'], reverse=True)
+            self._hourly = sorted(hourly, key=lambda x: x['start'] or datetime.datetime.min, reverse=True)
 
 
     @handle_errors
@@ -850,18 +843,18 @@ class CLPSensor(SensorEntity):
         if consumption_data:
             if self._type == '' or self._type.upper() == 'BIMONTHLY':
                 self._state_data_type = 'BIMONTHLY'
-                self._attr_native_value = float(consumption_data[-1]['kwhtotal'])
-                self._attr_last_reset = datetime.datetime.strptime(consumption_data[-1]['enddate'], '%Y%m%d%H%M%S')
+                self._attr_native_value = safe_float(consumption_data[-1].get('kwhtotal'))
+                self._attr_last_reset = parse_datetime(consumption_data[-1].get('enddate'), '%Y%m%d%H%M%S')
 
             if self._get_bill:
                 bills = []
                 for row in consumption_data:
                     bills.append({
-                        'start': datetime.datetime.strptime(row['startdate'], '%Y%m%d%H%M%S'),
-                        'end': datetime.datetime.strptime(row['enddate'], '%Y%m%d%H%M%S'),
-                        'kwh': float(row['kwhtotal']),
+                        'start': parse_datetime(row.get('startdate'), '%Y%m%d%H%M%S'),
+                        'end': parse_datetime(row.get('enddate'), '%Y%m%d%H%M%S'),
+                        'kwh': safe_float(row.get('kwhtotal')),
                     })
-                self._bills = sorted(bills, key=lambda x: x['start'], reverse=True)
+                self._bills = sorted(bills, key=lambda x: x['start'] or datetime.datetime.min, reverse=True)
 
             self._daily_task_last_fetch_time = datetime.datetime.now(self._timezone)
 
@@ -932,27 +925,27 @@ class CLPSensor(SensorEntity):
             consumption_data = (response['data'] or {}).get('consumptionData') or []
             if consumption_data:
                 if i == 1 and (self._type == '' or self._type.upper() == 'HOURLY'):
-                    for row in sorted(consumption_data, key=lambda x: x['startdate'], reverse=True):
-                        if row['validateStatus'] == 'Y':
+                    for row in sorted(consumption_data, key=lambda x: x.get('startdate') or '', reverse=True):
+                        if row.get('validateStatus') == 'Y':
                             self._state_data_type = 'HOURLY'
-                            self._attr_native_value = float(row['kwhtotal'])
-                            self._attr_last_reset = datetime.datetime.strptime(row['startdate'], '%Y%m%d%H%M%S')
+                            self._attr_native_value = safe_float(row.get('kwhtotal'))
+                            self._attr_last_reset = parse_datetime(row.get('startdate'), '%Y%m%d%H%M%S')
                             break
 
                 if self._get_hourly:
                     for row in consumption_data:
-                        if row['validateStatus'] == 'N':
+                        if row.get('validateStatus') == 'N':
                             continue
 
                         hourly.append({
-                            'start': datetime.datetime.strptime(row['startdate'], '%Y%m%d%H%M%S'),
-                            'kwh': float(row['kwhtotal']),
+                            'start': parse_datetime(row.get('startdate'), '%Y%m%d%H%M%S'),
+                            'kwh': safe_float(row.get('kwhtotal')),
                         })
 
                 self._hourly_task_last_fetch_time = datetime.datetime.now(self._timezone)
 
         if self._get_hourly:
-            self._hourly = sorted(hourly, key=lambda x: x['start'], reverse=True)
+            self._hourly = sorted(hourly, key=lambda x: x['start'] or datetime.datetime.min, reverse=True)
 
 
     @Throttle(MIN_TIME_BETWEEN_UPDATES)
