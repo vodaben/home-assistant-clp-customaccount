@@ -2,8 +2,6 @@ import datetime
 
 CONF_DOMAIN = 'clphk'
 
-CONF_RETRY_DELAY = 'retry_delay'
-
 # HTTP status / CLP error-code classification for token handling.
 # Only genuine auth failures clear stored tokens; transient statuses never do.
 AUTH_FAILURE_STATUSES = (401, 403)

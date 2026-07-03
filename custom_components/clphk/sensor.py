@@ -10,8 +10,8 @@ import homeassistant.helpers.config_validation as cv
 import pytz
 import voluptuous as vol
 from dateutil import relativedelta
-from homeassistant.components.lock import PLATFORM_SCHEMA
 from homeassistant.components.sensor import (
+    PLATFORM_SCHEMA,
     SensorDeviceClass,
     SensorEntity,
     SensorStateClass,
@@ -31,7 +31,6 @@ from homeassistant.util import Throttle
 
 from .const import (
     CONF_DOMAIN,
-    CONF_RETRY_DELAY,
     is_auth_failure,
     is_transient,
     parse_datetime,
@@ -59,7 +58,6 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_TIMEOUT, default=30): cv.positive_int,
-    vol.Optional(CONF_RETRY_DELAY, default=300): cv.positive_int,
     vol.Optional(CONF_NAME, default='CLP'): cv.string,
     vol.Optional(CONF_TYPE, default=''): cv.string,
     vol.Optional(CONF_GET_ACCT, default=False): cv.boolean,
@@ -129,7 +127,6 @@ async def async_setup_platform(
                 sensor_type='main',
                 name=discovery_info.get(CONF_NAME, "CLP"),
                 timeout=int(discovery_info.get(CONF_TIMEOUT, 30)),
-                retry_delay=int(discovery_info.get(CONF_RETRY_DELAY, 300)),
                 type=discovery_info.get(CONF_TYPE, ""),
                 get_acct=discovery_info.get(CONF_GET_ACCT, False),
                 get_bill=discovery_info.get(CONF_GET_BILL, False),
@@ -151,7 +148,6 @@ async def async_setup_platform(
                     sensor_type='renewable_energy',
                     name=discovery_info.get(CONF_RES_NAME, "CLP Renewable Energy"),
                     timeout=int(discovery_info.get(CONF_TIMEOUT, 30)),
-                    retry_delay=int(discovery_info.get(CONF_RETRY_DELAY, 300)),
                     type=discovery_info.get(CONF_RES_TYPE, ""),
                     get_acct=False,
                     get_bill=discovery_info.get(CONF_RES_GET_BILL, False),
@@ -221,7 +217,6 @@ class CLPSensor(SensorEntity):
             sensor_type: str,
             name: str,
             timeout: int,
-            retry_delay: int,
             type: str = None,
             get_acct: bool = False,
             get_bill: bool = False,
@@ -236,7 +231,6 @@ class CLPSensor(SensorEntity):
         self._sensor_type = sensor_type
         self._name = name
         self._timeout = timeout
-        self._retry_delay = retry_delay
         self._type = type
         self._get_acct = get_acct
         self._get_bill = get_bill

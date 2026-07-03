@@ -42,7 +42,6 @@ from .const import (
     CONF_RES_GET_HOURLY_DAYS,
     CONF_RES_NAME,
     CONF_RES_TYPE,
-    CONF_RETRY_DELAY,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -74,10 +73,6 @@ def _build_options_schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_TIMEOUT,
                 default=defaults.get(CONF_TIMEOUT, 30),
             ): NumberSelector(NumberSelectorConfig(min=1, max=120, mode=NumberSelectorMode.BOX)),
-            vol.Optional(
-                CONF_RETRY_DELAY,
-                default=defaults.get(CONF_RETRY_DELAY, 300),
-            ): NumberSelector(NumberSelectorConfig(min=60, max=3600, mode=NumberSelectorMode.BOX)),
             vol.Optional(
                 CONF_TYPE,
                 default=defaults.get(CONF_TYPE, ""),

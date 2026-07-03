@@ -1,7 +1,5 @@
 import asyncio
 
-import aiohttp
-import asyncio
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
