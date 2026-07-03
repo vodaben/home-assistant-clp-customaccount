@@ -346,7 +346,7 @@ class CLPSensor(SensorEntity):
             raise Exception("Problematic authorization. Please configure again, or change your IP address.")
 
         if json:
-            _LOGGER.debug(f"REQUEST {method} {headers} {url} {params} {json}")
+            _LOGGER.debug("REQUEST %s %s", method, url)
 
         merged_headers = dict(API_DEFAULT_HEADERS)
         if json is not None:
@@ -366,28 +366,28 @@ class CLPSensor(SensorEntity):
             try:
                 response.raise_for_status()
             except aiohttp.ClientResponseError as e:
-                error_message = f"{e.status} {e.request_info.url}"
                 error_data = None
                 error_content = ""
 
                 try:
-                    # Try to read the response content only once and store it
+                    # Read the response body once; used below to detect expiry codes.
                     error_content = await response.text()
                     try:
                         error_data = jsonlib.loads(error_content)
-                        error_message += f" : {error_data}"
                     except jsonlib.JSONDecodeError:
-                        error_message += f" : {error_content}"
-                except Exception as read_error:
-                    error_message += f" (Failed to read error response: {read_error})"
-                
-                _LOGGER.error(error_message)
+                        error_data = None
+                except Exception:
+                    _LOGGER.debug("Failed to read error response body.")
+
+                error_code = error_data.get("code") if isinstance(error_data, dict) else None
+                # Log status + endpoint + parsed error code only; never the raw body
+                # or the request URL query string (may carry tokens / account PII).
+                _LOGGER.error("HTTP %s for %s (code=%s)", e.status, url, error_code)
 
                 if 400 <= e.status < 500:
                     # Attempt token refresh on:
                     # - Known expiry codes: 906 (token expired), 100001 (LR access_token error)
                     # - 403 with unreadable body (connection closed before response could be read)
-                    error_code = error_data.get("code") if isinstance(error_data, dict) else None
                     should_refresh = (
                         retry_on_expired
                         and "refresh_token" not in url
@@ -437,15 +437,14 @@ class CLPSensor(SensorEntity):
                 response_data = await response.json()
 
                 if not response_data or 'data' not in response_data:
-                    _LOGGER.error(f"RESPONSE {response.status} {response.url} : {response_data}")
+                    _LOGGER.error("RESPONSE %s for %s: missing 'data'", response.status, url)
                     raise ValueError('Invalid response data')
 
-                _LOGGER.debug(f"RESPONSE {response.status} {response.url} : {response_data}")
+                _LOGGER.debug("RESPONSE %s for %s", response.status, url)
 
                 return response_data
-            except Exception as _:
-                response_text = await response.text()
-                _LOGGER.error(f"{response.status} {response.url} : {response_text}")
+            except Exception:
+                _LOGGER.error("RESPONSE %s for %s: unreadable or non-JSON body", response.status, url)
                 raise
 
     async def _refresh_access_token(self, stale_access_token=None):
