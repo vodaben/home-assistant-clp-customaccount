@@ -1,7 +1,6 @@
 import asyncio
 
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     CONF_DOMAIN,
@@ -9,18 +8,13 @@ from .const import (
 
 
 async def async_setup(hass: HomeAssistant, config: dict):
-    session = async_get_clientsession(hass)
-    hass.data[CONF_DOMAIN] = {
-        "session": session
-    }
+    hass.data[CONF_DOMAIN] = {}
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry):
     if CONF_DOMAIN not in hass.data:
-        session = async_get_clientsession(hass)
         hass.data[CONF_DOMAIN] = {
-            "session": session,
             "access_token": entry.data.get("access_token"),
             "refresh_token": entry.data.get("refresh_token"),
             "access_token_expiry_time": entry.data.get("access_token_expiry_time"),

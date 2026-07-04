@@ -10,6 +10,7 @@ from typing import Any
 import asyncio
 
 import voluptuous as vol
+from curl_cffi.requests import AsyncSession
 from homeassistant import config_entries
 from homeassistant.const import (
     CONF_NAME,
@@ -17,7 +18,6 @@ from homeassistant.const import (
     CONF_TYPE,
 )
 from homeassistant.config_entries import ConfigFlowResult
-from homeassistant.helpers import aiohttp_client
 from homeassistant.helpers.selector import (
     BooleanSelector,
     NumberSelector,
@@ -49,15 +49,12 @@ _LOGGER = logging.getLogger(__name__)
 CONF_ACCESS_TOKEN = "access_token"
 CONF_REFRESH_TOKEN = "refresh_token"
 
+# Browser fingerprint headers are set by curl_cffi's impersonate="chrome";
+# only app-level headers are declared here (see sensor.py for rationale).
 API_DEFAULT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
     "Accept": "application/json",
     "Accept-Language": "en",
-    "Accept-Encoding": "gzip, deflate, br, zstd",
     "Referer": "https://www.clp.com.hk/",
-    "sec-ch-ua": '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Linux"',
 }
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
@@ -211,7 +208,7 @@ def _classify_access_token_error(status: int, body: str) -> str:
     return "invalid_auth"
 
 
-async def _validate_access_token(session, token: str, timeout: int = 30) -> tuple[str | None, str]:
+async def _validate_access_token(token: str, timeout: int = 30) -> tuple[str | None, str]:
     """Return (normalized token, error key)."""
     normalized, format_error = _normalize_token(token)
     if not normalized:
@@ -224,17 +221,19 @@ async def _validate_access_token(session, token: str, timeout: int = 30) -> tupl
     }
     try:
         async with asyncio.timeout(timeout):
-            async with session.get(
-                "https://api.clp.com.hk/ts1/ms/profile/accountdetails/myServicesCA",
-                headers=headers,
-            ) as response:
-                body = await response.text()
-                if response.status != 200:
-                    last_error = _classify_access_token_error(response.status, body)
-                    return None, last_error
-                data = json.loads(body)
-                if isinstance(data, dict) and isinstance(data.get("data"), list):
-                    return normalized, ""
+            async with AsyncSession() as session:
+                response = await session.get(
+                    "https://api.clp.com.hk/ts1/ms/profile/accountdetails/myServicesCA",
+                    headers=headers,
+                    impersonate="chrome",
+                )
+        body = response.text or ""
+        status = response.status_code
+        if status != 200:
+            return None, _classify_access_token_error(status, body)
+        data = json.loads(body)
+        if isinstance(data, dict) and isinstance(data.get("data"), list):
+            return normalized, ""
     except Exception:
         last_error = "cannot_connect"
     return None, last_error
@@ -255,10 +254,8 @@ class CLPHKOptionsFlowHandler(config_entries.OptionsFlow):
             access_token_input = user_input[CONF_ACCESS_TOKEN]
             refresh_token_input = user_input[CONF_REFRESH_TOKEN]
             merged = {**self.config_entry.data, **self.config_entry.options}
-            session = aiohttp_client.async_get_clientsession(self.hass)
             timeout = int(merged.get(CONF_TIMEOUT, 30))
             normalized_access_token, error_key = await _validate_access_token(
-                session=session,
                 token=access_token_input,
                 timeout=timeout,
             )
@@ -323,9 +320,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain="clphk"):
         if user_input is not None:
             access_token_input = user_input[CONF_ACCESS_TOKEN]
             refresh_token_input = user_input[CONF_REFRESH_TOKEN]
-            session = aiohttp_client.async_get_clientsession(self.hass)
             normalized_access_token, error_key = await _validate_access_token(
-                session=session,
                 token=access_token_input,
                 timeout=30,
             )

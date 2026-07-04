@@ -5,10 +5,10 @@ import datetime
 import json as jsonlib
 import logging
 
-import aiohttp
 import homeassistant.helpers.config_validation as cv
 import pytz
 import voluptuous as vol
+from curl_cffi.requests import AsyncSession
 from dateutil import relativedelta
 from homeassistant.components.sensor import (
     PLATFORM_SCHEMA,
@@ -24,7 +24,6 @@ from homeassistant.const import (
     UnitOfEnergy,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import aiohttp_client
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.util import Throttle
@@ -80,7 +79,6 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 MIN_TIME_BETWEEN_UPDATES = datetime.timedelta(seconds=300)
 DAILY_TASK_INTERVAL = datetime.timedelta(hours=12)
 HOURLY_TASK_INTERVAL = datetime.timedelta(minutes=30)
-USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
 
 DOMAIN = CONF_DOMAIN
 
@@ -88,15 +86,13 @@ class FatalAuthError(Exception):
     """Non-recoverable auth error that requires reconfiguration."""
 
 
+# Browser fingerprint headers (User-Agent, sec-ch-ua*, Accept-Encoding) are set by
+# curl_cffi's impersonate="chrome"; only app-level headers are declared here so they
+# stay consistent with the impersonated browser and don't leak a mismatched UA.
 API_DEFAULT_HEADERS = {
-    "User-Agent": USER_AGENT,
     "Accept": "application/json",
     "Accept-Language": "en",
-    "Accept-Encoding": "gzip, deflate, br, zstd",
     "Referer": "https://www.clp.com.hk/",
-    "sec-ch-ua": '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Linux"',
 }
 
 
@@ -110,10 +106,7 @@ async def async_setup_platform(
     if discovery_info is None:
         return
 
-    session = aiohttp_client.async_get_clientsession(hass)
-
     # Shared token state in hass.data[DOMAIN]
-    hass.data[DOMAIN]["session"] = session
     # Set tokens on restart (if not already set)
     for k in ("access_token", "refresh_token", "access_token_expiry_time"):
         if discovery_info.get(k) is not None and discovery_info.get(k) != "":
@@ -303,10 +296,6 @@ class CLPSensor(SensorEntity):
         self._token_state["access_token_expiry_time"] = value
 
     @property
-    def _session(self):
-        return self._token_state["session"]
-
-    @property
     def extra_state_attributes(self) -> dict:
         attr = {
             "state_data_type": self._state_data_type,
@@ -356,97 +345,92 @@ class CLPSensor(SensorEntity):
             merged_headers.update(headers)
 
         async with asyncio.timeout(self._timeout):
-            response = await self._session.request(
-                method,
-                url,
-                headers=merged_headers,
-                params=params,
-                json=json,
-            )
+            async with AsyncSession() as session:
+                response = await session.request(
+                    method,
+                    url,
+                    headers=merged_headers,
+                    params=params,
+                    json=json,
+                    impersonate="chrome",
+                )
 
+        status = response.status_code
+
+        if status >= 400:
+            # curl_cffi buffers the full body, so .text is always available.
+            error_content = response.text or ""
             try:
-                response.raise_for_status()
-            except aiohttp.ClientResponseError as e:
+                error_data = jsonlib.loads(error_content)
+            except (ValueError, TypeError):
                 error_data = None
-                error_content = ""
 
-                try:
-                    # Read the response body once; used below to detect expiry codes.
-                    error_content = await response.text()
-                    try:
-                        error_data = jsonlib.loads(error_content)
-                    except jsonlib.JSONDecodeError:
-                        error_data = None
-                except Exception:
-                    _LOGGER.debug("Failed to read error response body.")
+            error_code = error_data.get("code") if isinstance(error_data, dict) else None
+            # Log status + endpoint + parsed error code only; never the raw body
+            # or the request URL query string (may carry tokens / account PII).
+            _LOGGER.error("HTTP %s for %s (code=%s)", status, url, error_code)
 
-                error_code = error_data.get("code") if isinstance(error_data, dict) else None
-                # Log status + endpoint + parsed error code only; never the raw body
-                # or the request URL query string (may carry tokens / account PII).
-                _LOGGER.error("HTTP %s for %s (code=%s)", e.status, url, error_code)
-
-                if 400 <= e.status < 500:
-                    # Attempt token refresh on:
-                    # - Known expiry codes: 906 (token expired), 100001 (LR access_token error)
-                    # - 403 with unreadable body (connection closed before response could be read)
-                    should_refresh = (
-                        retry_on_expired
-                        and "refresh_token" not in url
-                        and self._refresh_token
-                        # Only refresh when the failed request actually carried an
-                        # access token. Login/refresh calls have no Authorization, so
-                        # they can never re-enter _refresh_access_token (which would
-                        # deadlock on the non-reentrant token_lock).
-                        and (headers or {}).get("Authorization")
-                        and (
-                            error_code in (906, 100001)
-                            or (e.status == 403 and error_data is None)
-                        )
+            if 400 <= status < 500:
+                # Attempt token refresh on:
+                # - Known expiry codes: 906 (token expired), 100001 (LR access_token error)
+                # - 403 with no parseable JSON error (connection closed / edge deny)
+                should_refresh = (
+                    retry_on_expired
+                    and "refresh_token" not in url
+                    and self._refresh_token
+                    # Only refresh when the failed request actually carried an
+                    # access token. Login/refresh calls have no Authorization, so
+                    # they can never re-enter _refresh_access_token (which would
+                    # deadlock on the non-reentrant token_lock).
+                    and (headers or {}).get("Authorization")
+                    and (
+                        error_code in (906, 100001)
+                        or (status == 403 and error_data is None)
                     )
-                    if should_refresh:
-                        _LOGGER.debug("Access token likely expired (status=%s, code=%s, body_readable=%s). Refreshing and retrying once.", e.status, error_code, error_data is not None)
-                        stale_token = (headers or {}).get("Authorization")
-                        await self._refresh_access_token(stale_access_token=stale_token)
-                        retry_headers = dict(headers or {})
-                        if "Authorization" in retry_headers:
-                            retry_headers["Authorization"] = self._access_token
-                        return await self.api_request(
-                            method=method,
-                            url=url,
-                            headers=retry_headers,
-                            json=json,
-                            params=params,
-                            retry_on_expired=False,
-                        )
+                )
+                if should_refresh:
+                    _LOGGER.debug("Access token likely expired (status=%s, code=%s, body_parsed=%s). Refreshing and retrying once.", status, error_code, error_data is not None)
+                    stale_token = (headers or {}).get("Authorization")
+                    await self._refresh_access_token(stale_access_token=stale_token)
+                    retry_headers = dict(headers or {})
+                    if "Authorization" in retry_headers:
+                        retry_headers["Authorization"] = self._access_token
+                    return await self.api_request(
+                        method=method,
+                        url=url,
+                        headers=retry_headers,
+                        json=json,
+                        params=params,
+                        retry_on_expired=False,
+                    )
 
-                    # Only clear credentials on a genuine, unrecoverable auth failure.
-                    # Transient/non-auth 4xx (400/404/408/409/422/429/...) must NOT
-                    # wipe tokens - that would kill the integration on a rate limit
-                    # or a single bad request.
-                    if is_auth_failure(e.status, error_code):
-                        await self._handle_auth_failure(e.status, error_content or "")
-                        raise FatalAuthError(
-                            f"CLPHK authentication failed (HTTP {e.status}, code {error_code}); "
-                            "tokens cleared, integration stopped."
-                        )
+                # Only clear credentials on a genuine, unrecoverable auth failure.
+                # Transient/non-auth 4xx (400/404/408/409/422/429/...) must NOT
+                # wipe tokens - that would kill the integration on a rate limit
+                # or a single bad request.
+                if is_auth_failure(status, error_code):
+                    await self._handle_auth_failure(status, error_content or "")
+                    raise FatalAuthError(
+                        f"CLPHK authentication failed (HTTP {status}, code {error_code}); "
+                        "tokens cleared, integration stopped."
+                    )
 
-                    raise e
+                raise Exception(f"CLPHK API error: HTTP {status} for {url} (code {error_code})")
 
-                raise e
+            raise Exception(f"CLPHK API error: HTTP {status} for {url}")
 
-            try:
-                response_data = await response.json()
+        try:
+            response_data = response.json()
+        except Exception:
+            _LOGGER.error("RESPONSE %s for %s: unreadable or non-JSON body", status, url)
+            raise
 
-                if not response_data or 'data' not in response_data:
-                    _LOGGER.error("RESPONSE %s for %s: missing 'data'", response.status, url)
-                    raise ValueError('Invalid response data')
+        if not response_data or 'data' not in response_data:
+            _LOGGER.error("RESPONSE %s for %s: missing 'data'", status, url)
+            raise ValueError('Invalid response data')
 
-                _LOGGER.debug("RESPONSE %s for %s", response.status, url)
-
-                return response_data
-            except Exception:
-                _LOGGER.error("RESPONSE %s for %s: unreadable or non-JSON body", response.status, url)
-                raise
+        _LOGGER.debug("RESPONSE %s for %s", status, url)
+        return response_data
 
     async def _refresh_access_token(self, stale_access_token=None):
         """Refresh access token using stored refresh token and persist it.
@@ -487,28 +471,31 @@ class CLPSensor(SensorEntity):
             refresh_headers["Content-Type"] = "application/json"
 
             async with asyncio.timeout(self._timeout):
-                response = await self._session.request(
-                    "POST",
-                    "https://api.clp.com.hk/ts1/ms/profile/identity/manage/account/refresh_token",
-                    headers=refresh_headers,
-                    json={"refreshToken": self._refresh_token},
-                )
-                response_text = await response.text()
+                async with AsyncSession() as session:
+                    response = await session.request(
+                        "POST",
+                        "https://api.clp.com.hk/ts1/ms/profile/identity/manage/account/refresh_token",
+                        headers=refresh_headers,
+                        json={"refreshToken": self._refresh_token},
+                        impersonate="chrome",
+                    )
+            response_text = response.text or ""
+            status = response.status_code
 
-            if is_transient(response.status):
+            if is_transient(status):
                 # Rate limit / timeout on the refresh endpoint is temporary; keep the
                 # tokens and let the caller back off instead of forcing reconfigure.
                 raise Exception(
-                    f"Refresh token request temporarily failed with {response.status}: {response_text[:200]}"
+                    f"Refresh token request temporarily failed with {status}: {response_text[:200]}"
                 )
-            if 400 <= response.status < 500:
-                await self._handle_auth_failure(response.status, response_text)
+            if 400 <= status < 500:
+                await self._handle_auth_failure(status, response_text)
                 raise FatalAuthError(
                     "Refresh token invalid/expired. CLPHK integration stopped; please reconfigure tokens."
                 )
-            if response.status >= 500:
+            if status >= 500:
                 raise Exception(
-                    f"Refresh token request failed with {response.status}: {response_text[:200]}"
+                    f"Refresh token request failed with {status}: {response_text[:200]}"
                 )
 
             try:
@@ -522,7 +509,7 @@ class CLPSensor(SensorEntity):
                 # refresh token may already be rotated/consumed, so retrying is
                 # futile. Stop cleanly instead of KeyError -> retry loop.
                 await self._handle_auth_failure(
-                    response.status,
+                    status,
                     response_text,
                     detail="refresh response was missing token fields",
                 )

@@ -9,7 +9,7 @@
   "codeowners": ["@thematrixdev"],
   "config_flow": true,
   "requirements": [
-    "aiohttp",
+    "curl_cffi>=0.15.0",
     "pytz"
   ],
   "loggers": ["clphk"],
