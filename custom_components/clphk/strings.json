@@ -10,7 +10,10 @@
         }
       },
       "options": {
-        "title": "Sensor Options"
+        "title": "Sensor Options",
+        "data": {
+          "custom_account_number": "Custom Account Number"
+        }
       }
     },
     "error": {

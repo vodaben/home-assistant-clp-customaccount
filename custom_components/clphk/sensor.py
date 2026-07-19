@@ -36,6 +36,7 @@ from .const import (
     parse_refresh_tokens,
     safe_float,
 
+    CONF_CUSTOM_ACCOUNT_NUMBER,
     CONF_GET_ACCT,
     CONF_GET_BILL,
     CONF_GET_ESTIMATION,
@@ -59,6 +60,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_TIMEOUT, default=30): cv.positive_int,
     vol.Optional(CONF_NAME, default='CLP'): cv.string,
     vol.Optional(CONF_TYPE, default=''): cv.string,
+    vol.Optional(CONF_CUSTOM_ACCOUNT_NUMBER, default=''): cv.string,
     vol.Optional(CONF_GET_ACCT, default=False): cv.boolean,
     vol.Optional(CONF_GET_BILL, default=False): cv.boolean,
     vol.Optional(CONF_GET_ESTIMATION, default=False): cv.boolean,
@@ -121,6 +123,7 @@ async def async_setup_platform(
                 name=discovery_info.get(CONF_NAME, "CLP"),
                 timeout=int(discovery_info.get(CONF_TIMEOUT, 30)),
                 type=discovery_info.get(CONF_TYPE, ""),
+                custom_account_number=discovery_info.get(CONF_CUSTOM_ACCOUNT_NUMBER, ""),
                 get_acct=discovery_info.get(CONF_GET_ACCT, False),
                 get_bill=discovery_info.get(CONF_GET_BILL, False),
                 get_estimation=discovery_info.get(CONF_GET_ESTIMATION, False),
@@ -142,6 +145,7 @@ async def async_setup_platform(
                     name=discovery_info.get(CONF_RES_NAME, "CLP Renewable Energy"),
                     timeout=int(discovery_info.get(CONF_TIMEOUT, 30)),
                     type=discovery_info.get(CONF_RES_TYPE, ""),
+                    custom_account_number=discovery_info.get(CONF_CUSTOM_ACCOUNT_NUMBER, ""),
                     get_acct=False,
                     get_bill=discovery_info.get(CONF_RES_GET_BILL, False),
                     get_estimation=False,
@@ -211,6 +215,7 @@ class CLPSensor(SensorEntity):
             name: str,
             timeout: int,
             type: str = None,
+            custom_account_number: str = "",
             get_acct: bool = False,
             get_bill: bool = False,
             get_estimation: bool = False,
@@ -225,6 +230,7 @@ class CLPSensor(SensorEntity):
         self._name = name
         self._timeout = timeout
         self._type = type
+        self._custom_account_number = (custom_account_number or "").strip()
         self._get_acct = get_acct
         self._get_bill = get_bill
         self._get_estimation = get_estimation
@@ -254,6 +260,7 @@ class CLPSensor(SensorEntity):
         self._daily_task_last_fetch_time = None
         self._no_account_warned = False
         self._multi_account_warned = False
+        self._custom_account_not_found_warned = False
 
     @property
     def unique_id(self):
@@ -578,20 +585,46 @@ class CLPSensor(SensorEntity):
                 "Authorization": self._access_token,
             },
         )
-        # This integration reports a single account: the first entry with status
-        # 'Active'. Warn once if the login owns more than one active account so the
-        # user knows the rest are not reported.
+        # This integration reports a single account: the configured
+        # `custom_account_number`, or the first entry with status 'Active' when
+        # none is configured. Warn once if the login owns more than one active
+        # account so the user knows the rest are not reported.
         active_accounts = [item for item in (response['data'] or []) if item.get('status') == 'Active']
         if len(active_accounts) > 1 and not self._multi_account_warned:
             ca_nos = [item.get('caNo') for item in active_accounts]
-            _LOGGER.warning(
-                "%s: login has %d active CLP accounts (%s); only the first is reported, the rest are ignored.",
-                self._name,
-                len(active_accounts),
-                ", ".join(str(ca_no) for ca_no in ca_nos),
-            )
+            if self._custom_account_number:
+                _LOGGER.warning(
+                    "%s: login has %d active CLP accounts (%s); reporting configured custom account number %s.",
+                    self._name,
+                    len(active_accounts),
+                    ", ".join(str(ca_no) for ca_no in ca_nos),
+                    self._custom_account_number,
+                )
+            else:
+                _LOGGER.warning(
+                    "%s: login has %d active CLP accounts (%s); only the first is reported, the rest are ignored.",
+                    self._name,
+                    len(active_accounts),
+                    ", ".join(str(ca_no) for ca_no in ca_nos),
+                )
             self._multi_account_warned = True
-        active_data = next(iter(active_accounts), None)
+
+        if self._custom_account_number:
+            active_data = next(
+                (item for item in active_accounts if str(item.get('caNo')) == self._custom_account_number),
+                None,
+            )
+            if active_data is None and not self._custom_account_not_found_warned:
+                _LOGGER.warning(
+                    "%s: configured custom account number %s not found among active accounts (%s).",
+                    self._name,
+                    self._custom_account_number,
+                    ", ".join(str(item.get('caNo')) for item in active_accounts),
+                )
+                self._custom_account_not_found_warned = True
+        else:
+            active_data = next(iter(active_accounts), None)
+
         ca_no = active_data.get('caNo') if active_data else None
         if not ca_no:
             self._account_number = None
@@ -610,6 +643,7 @@ class CLPSensor(SensorEntity):
             'due_date': parse_datetime(active_data.get('dueDate'), '%Y%m%d%H%M%S'),
         }
         self._no_account_warned = False
+        self._custom_account_not_found_warned = False
         self._single_task_last_fetch_time = datetime.datetime.now(self._timezone)
 
 

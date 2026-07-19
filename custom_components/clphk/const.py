@@ -69,6 +69,8 @@ def parse_datetime(value, fmt):
     except (TypeError, ValueError):
         return None
 
+CONF_CUSTOM_ACCOUNT_NUMBER = 'custom_account_number'
+
 CONF_GET_ACCT = 'get_account'
 CONF_GET_BILL = 'get_bill'
 CONF_GET_ESTIMATION = 'get_estimation'

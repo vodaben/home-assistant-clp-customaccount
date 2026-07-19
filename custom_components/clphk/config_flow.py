@@ -28,6 +28,7 @@ from homeassistant.helpers.selector import (
 )
 
 from .const import (
+    CONF_CUSTOM_ACCOUNT_NUMBER,
     CONF_GET_ACCT,
     CONF_GET_BILL,
     CONF_GET_BIMONTHLY,
@@ -73,6 +74,10 @@ def _build_options_schema(defaults: dict[str, Any]) -> vol.Schema:
             vol.Optional(
                 CONF_TYPE,
                 default=defaults.get(CONF_TYPE, ""),
+            ): TextSelector(TextSelectorConfig()),
+            vol.Optional(
+                CONF_CUSTOM_ACCOUNT_NUMBER,
+                default=defaults.get(CONF_CUSTOM_ACCOUNT_NUMBER, ""),
             ): TextSelector(TextSelectorConfig()),
             vol.Optional(
                 CONF_GET_ACCT,
