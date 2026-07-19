@@ -583,10 +583,12 @@ class CLPSensor(SensorEntity):
         # user knows the rest are not reported.
         active_accounts = [item for item in (response['data'] or []) if item.get('status') == 'Active']
         if len(active_accounts) > 1 and not self._multi_account_warned:
+            ca_nos = [item.get('caNo') for item in active_accounts]
             _LOGGER.warning(
-                "%s: login has %d active CLP accounts; only the first is reported, the rest are ignored.",
+                "%s: login has %d active CLP accounts (%s); only the first is reported, the rest are ignored.",
                 self._name,
                 len(active_accounts),
+                ", ".join(str(ca_no) for ca_no in ca_nos),
             )
             self._multi_account_warned = True
         active_data = next(iter(active_accounts), None)
