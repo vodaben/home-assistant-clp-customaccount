@@ -95,6 +95,7 @@ For both `Access Token` and `Refresh Token`, only these formats are accepted:
 | `name`                                    | string  |          | Any string                                   | `CLP`                    | Name of the sensor                                                                  |
 | `timeout`                                 | int     |          | Any integer                                  | `30`                     | Connection timeout in second                                                        |
 | `type`                                    | string  |          | ` `<br/>`BIMONTHLY`<br/>`DAILY`<br/>`HOURLY` | ` `                      | Type of data to be shown in state<br/>If not specified, best accurate value is used |
+| `custom_account_number`                   | string  |          | Any CLP account number (`caNo`)              | ` `                      | Report this account instead of the first active one<br/>If your login owns more than one active account, set this to pick which one is reported |
 | `get_account`                             | boolean |          | `True`<br/>`False`                           | `False`                  | Get account summary                                                                 |
 | `get_bill`                                | boolean |          | `True`<br/>`False`                           | `False`                  | Get bills                                                                           |
 | `get_estimation`                          | boolean |          | `True`<br/>`False`                           | `False`                  | Get usage estimation                                                                |
@@ -140,7 +141,7 @@ At that point, reconfigure with fresh tokens.
 ### Common problem
 
 - More than one `clphk` entry will cause issues. Avoid multiple entries.
-- If your CLP login owns more than one account, only the first active account is reported; the rest are ignored (a warning is logged).
+- If your CLP login owns more than one account, only the first active account is reported by default; the rest are ignored (a warning is logged, listing all active account numbers). Set `custom_account_number` to the account number (`caNo`) you want reported instead.
 - Timeouts may occur on slower hardware. Increase `timeout` value to mitigate.
 - If you see `CLPHK Authentication Failed` notification, refresh token was rejected by CLP and the integration was stopped. Reconfigure with new tokens.
 
